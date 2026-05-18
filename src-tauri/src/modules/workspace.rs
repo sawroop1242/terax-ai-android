@@ -30,6 +30,12 @@ pub fn bootstrap_registry(registry: &WorkspaceRegistry) {
     if let Some(home) = dirs::home_dir() {
         let _ = registry.authorize(home);
     }
+    // On Android authorize the entire app private storage so fs commands
+    // can read proot/rootfs without permission errors.
+    #[cfg(target_os = "android")]
+    {
+        let _ = registry.authorize("/data/data/app.crynta.terax/files");
+    }
 }
 
 #[tauri::command]
