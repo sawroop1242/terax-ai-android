@@ -78,10 +78,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // ── PTY ────────────────────────────────────────────────────────────
-            pty::pty_open,
-            pty::pty_write,
-            pty::pty_resize,
-            pty::pty_close,
+            pty::android::pty_open,
+            pty::android::pty_write,
+            pty::android::pty_resize,
+            pty::android::pty_close,
             // ── Filesystem ────────────────────────────────────────────────────
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
