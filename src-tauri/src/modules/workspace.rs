@@ -47,13 +47,33 @@ pub async fn workspace_authorize(
     Ok(canonical.to_string_lossy().replace('\\', "/"))
 }
 
+
+
+
 #[tauri::command]
 pub async fn workspace_current_dir(
+    app: tauri::AppHandle,
     registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<String, String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let canonical = registry.authorize(&cwd).map_err(|e| e.to_string())?;
-    Ok(canonical.to_string_lossy().replace('\\', "/"))
+    #[cfg(target_os = "android")]
+    {
+        let base = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+        let p = base.join("rootfs").join("root");
+        // Create if not yet bootstrapped so canonicalize doesn't fail
+        let _ = std::fs::create_dir_all(&p);
+        let canonical = registry.authorize(&p).map_err(|e| e.to_string())?;
+        return Ok(canonical.to_string_lossy().replace('\\', "/"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let canonical = registry.authorize(&cwd).map_err(|e| e.to_string())?;
+        Ok(canonical.to_string_lossy().replace('\\', "/"))
+    }
 }
 
 
