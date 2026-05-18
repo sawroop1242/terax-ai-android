@@ -42,9 +42,13 @@ tokio = { version = "1", default-features = false, features = ["rt"] }
 portable-pty = "0.9"
 
 # ── Android-only: PTY via nix + proot ─────────────────────────────────────────
-[target.'cfg(target_os = "android")'.dependencies]
-nix = { version = "0.29", features = ["pty", "process", "fs", "signal", "term"] }
+# Desktop (Linux/macOS) — pty feature available
+[target.'cfg(not(target_os = "android"))'.dependencies]
+nix = { version = "0.29", features = ["pty", "signal", "process"] }
 
+# Android — pty not available in Bionic libc, uses android.rs instead
+[target.'cfg(target_os = "android")'.dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }
 # ── Unix shared (desktop + android) ───────────────────────────────────────────
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
