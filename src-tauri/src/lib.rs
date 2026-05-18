@@ -6,7 +6,11 @@ mod bootstrap;
 mod modules;
 
 use modules::{fs, git, net, pty, secrets, shell, workspace};
+
+#[cfg(not(target_os = "android"))]
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+// ── Settings window (desktop only) ───────────────────────────────────────────
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
@@ -56,9 +60,11 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     Ok(())
 }
 
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_os::init())
@@ -77,11 +83,24 @@ pub fn run() {
             registry
         })
         .invoke_handler(tauri::generate_handler![
-            // ── PTY ────────────────────────────────────────────────────────────
+            // ── PTY — Android ─────────────────────────────────────────────────
+            #[cfg(target_os = "android")]
             pty::android::pty_open,
+            #[cfg(target_os = "android")]
             pty::android::pty_write,
+            #[cfg(target_os = "android")]
             pty::android::pty_resize,
+            #[cfg(target_os = "android")]
             pty::android::pty_close,
+            // ── PTY — Desktop ─────────────────────────────────────────────────
+            #[cfg(not(target_os = "android"))]
+            pty::pty_open,
+            #[cfg(not(target_os = "android"))]
+            pty::pty_write,
+            #[cfg(not(target_os = "android"))]
+            pty::pty_resize,
+            #[cfg(not(target_os = "android"))]
+            pty::pty_close,
             // ── Filesystem ────────────────────────────────────────────────────
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
@@ -97,6 +116,7 @@ pub fn run() {
             fs::search::fs_list_files,
             fs::grep::fs_grep,
             fs::grep::fs_glob,
+            // ── Git ───────────────────────────────────────────────────────────
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,
             git::commands::git_status,
@@ -114,6 +134,7 @@ pub fn run() {
             git::commands::git_commit_files,
             git::commands::git_commit_file_diff,
             git::commands::git_remote_url,
+            // ── Shell ─────────────────────────────────────────────────────────
             shell::shell_run_command,
             shell::shell_session_open,
             shell::shell_session_run,
@@ -122,13 +143,13 @@ pub fn run() {
             shell::shell_bg_logs,
             shell::shell_bg_kill,
             shell::shell_bg_list,
-            // ── WSL (compiles cross-platform; returns empty on non-Windows) ───
+            // ── Workspace / WSL ───────────────────────────────────────────────
             workspace::wsl_list_distros,
             workspace::wsl_default_distro,
             workspace::wsl_home,
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
-            open_settings_window,
+            // ── Secrets ───────────────────────────────────────────────────────
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,
