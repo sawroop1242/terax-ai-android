@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-
+use tauri::Manager;
 #[derive(Default)]
 pub struct WorkspaceRegistry {
     roots: Mutex<HashSet<PathBuf>>,
