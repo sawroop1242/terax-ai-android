@@ -1,0 +1,141 @@
+name: Android APK
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Build profile (debug | release)"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned NDK matches the one set in scripts/init-android.sh defaults.
+  NDK_VERSION: "28.0.12916984"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl wget file \
+            libssl-dev \
+            pkg-config \
+            libtalloc-dev
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: build-tools;34.0.0 platforms;android-34 ndk;${{ env.NDK_VERSION }} cmake;3.22.1
+
+      - name: Export NDK_HOME
+        run: echo "NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Setup Rust + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          key: android-${{ env.NDK_VERSION }}
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      # ── Verify local assets exist ──────────────────────────────────────────
+      - name: Verify bundled assets
+        run: |
+          if [ ! -f "src-tauri/assets/android/proot-aarch64" ]; then
+            echo "::error::proot-aarch64 missing in assets/android/"
+            exit 1
+          fi
+          if [ ! -f "src-tauri/assets/android/alpine-rootfs.tar.gz" ]; then
+            echo "::error::alpine-rootfs.tar.gz missing in assets/android/"
+            exit 1
+          fi
+          echo "Local assets verified successfully."
+
+      # ── Initialize the Android project + copy our Kotlin plugins in ───────
+      - name: Initialize Android project
+        run: bash ./scripts/init-android.sh
+
+      # ── Force Target SDK 28 & Native Extraction (Fix OS Error 13) ──────────
+      - name: Patch Android build configurations
+        run: |
+          echo "Setting targetSdk to 28 in build.gradle.kts..."
+          sed -i 's/targetSdk = [0-9]*/targetSdk = 28/g' src-tauri/gen/android/app/build.gradle.kts
+          
+          echo "Enabling native library extraction in AndroidManifest.xml..."
+          sed -i 's/<application/<application android:extractNativeLibs="true"/g' src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          
+          echo "Verifying changes:"
+          cat src-tauri/gen/android/app/build.gradle.kts | grep targetSdk
+
+      # ── Build Steps ────────────────────────────────────────────────────────
+      - name: Build APK (debug)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.profile == 'debug' }}
+        run: pnpm tauri android build --apk --debug
+
+      - name: Build APK (release)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'release' }}
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$ANDROID_KEYSTORE_PATH"
+          fi
+          pnpm tauri android build --apk
+
+      # ── Artifact Uploads ───────────────────────────────────────────────────
+      - name: Upload debug APK
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.profile == 'debug' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: terax-android-debug
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload release APK
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'release' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: terax-android-release
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          if-no-files-found: error
+          
