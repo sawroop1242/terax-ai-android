@@ -38,13 +38,23 @@ pub async fn bootstrap_android(app: AppHandle) -> Result<String, String> {
     if !proot_dest.exists() {
         log::info!("bootstrap_android: Extracting proot binary bytes...");
         // resolve_resource का उपयोग APK के अंदर से सीधे बाइट्स पढ़ने के लिए करें
-        let proot_bytes = app
+    
+
+                // Tauri v2 में .path().resource() का उपयोग करके वास्तविक पाथ निकालें
+        let proot_resource_path = app
             .path()
-            .resolve_resource("assets/android/proot-aarch64")
-            .map_err(|e| format!("resolve proot asset bytes failed: {e}"))?;
+            .resource("assets/android/proot-aarch64")
+            .map_err(|e| format!("resolve proot asset path failed: {e}"))?;
+
+        // पाथ मिलने के बाद std::fs::read का उपयोग करके फ़ाइल के बाइट्स पढ़ें
+        let proot_bytes = std::fs::read(&proot_resource_path)
+            .map_err(|e| format!("failed to read proot asset bytes from disk: {e}"))?;
 
         fs::write(&proot_dest, proot_bytes)
             .map_err(|e| format!("write proot binary: {e}"))?;
+        
+
+        
 
         // Executable परमिशन (0o755) सेट करें ताकि Permission Denied (Error 13) न आए
         fs::set_permissions(&proot_dest, fs::Permissions::from_mode(0o755))
@@ -59,16 +69,23 @@ pub async fn bootstrap_android(app: AppHandle) -> Result<String, String> {
         log::info!("bootstrap_android: Extracting alpine tarball bytes...");
         fs::create_dir_all(&rootfs_dest).map_err(|e| format!("create rootfs dir: {e}"))?;
 
-        // एसेट से .tar.gz के बाइट्स रीड करें
-        let tarball_bytes = app
-            .path()
-            .resolve_resource("assets/android/alpine-rootfs.tar.gz")
-            .map_err(|e| format!("resolve rootfs asset bytes failed: {e}"))?;
+        
 
-        // सिस्टम 'tar' कमांड चलाने के लिए इसे पहले एक अस्थायी फ़ाइल में सहेजें
+                // ठीक इसी तरह Alpine tarball का भी पाथ निकालें
+        let tarball_resource_path = app
+            .path()
+            .resource("assets/android/alpine-rootfs.tar.gz")
+            .map_err(|e| format!("resolve rootfs asset path failed: {e}"))?;
+
+        // std::fs::read का उपयोग करके .tar.gz के बाइट्स लोड करें
+        let tarball_bytes = std::fs::read(&tarball_resource_path)
+            .map_err(|e| format!("failed to read rootfs asset bytes from disk: {e}"))?;
+
+        // इसके बाद का आपका बाकी कोड (tmp_tarball_path में राइट करना और tar चलाना) वैसा ही रहेगा
         let tmp_tarball_path = base.join("alpine-tmp.tar.gz");
         fs::write(&tmp_tarball_path, tarball_bytes)
             .map_err(|e| format!("write intermediate tarball: {e}"))?;
+        
 
         log::info!("bootstrap_android: Running system tar extraction...");
         let status = std::process::Command::new("tar")
