@@ -24,12 +24,19 @@ pub struct DirEntry {
 /// Lists immediate children of `path`. Dirs first, then files, each sorted
 /// case-insensitively. Dot-prefixed entries (files and dirs) are hidden unless
 /// `show_hidden` is set.
+// Block reading filesystem root on Android — no app has permission
+#[cfg(target_os = "android")]
 #[tauri::command]
 pub fn fs_read_dir(
     path: String,
     show_hidden: bool,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<Vec<DirEntry>, String> {
+    // Block reading filesystem root on Android — no app has permission
+
+    if path == "/" || path.is_empty() {
+        return Err("Cannot browse filesystem root on Android".into());
+    }
     let workspace = WorkspaceEnv::from_option(workspace);
     let root = resolve_path(&path, &workspace);
     let read = std::fs::read_dir(&root).map_err(|e| {
@@ -99,12 +106,16 @@ pub fn fs_read_dir(
 ///
 /// Symlinks to directories are included (matches shell `cd` semantics).
 /// Hidden entries are filtered by dot-prefix only.
+#[cfg(target_os = "android")]
 #[tauri::command]
 pub fn list_subdirs(
     path: String,
     show_hidden: bool,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<Vec<String>, String> {
+    if path == "/" || path.is_empty() {
+    return Err("Cannot browse filesystem root on Android".into());
+    }
     let workspace = WorkspaceEnv::from_option(workspace);
     let root = resolve_path(&path, &workspace);
     let read = std::fs::read_dir(&root).map_err(|e| {
