@@ -364,17 +364,15 @@ pub fn pty_write(
     id: u32,
     data: String,
 ) -> Result<(), String> {
-    let sessions = state.sessions.read().unwrap();
-    let session = sessions.get(&id).ok_or_else(|| {
-        log::warn!("pty_write android: unknown id={id}");
-        "no session".to_string()
-    })?;
-    session
-        .lock()
-        .unwrap()
-        .write_tx
-        .send(data.into_bytes())
-        .map_err(|e| e.to_string())
+    let tx = {
+        let sessions = state.sessions.read().unwrap();
+        let session = sessions.get(&id).ok_or_else(|| {
+            log::warn!("pty_write android: unknown id={id}");
+            "no session".to_string()
+        })?;
+        session.lock().unwrap().write_tx.clone()
+    }; // sessions lock dropped here
+    tx.send(data.into_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
