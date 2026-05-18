@@ -375,6 +375,10 @@ pub fn pty_write(
     tx.send(data.into_bytes()).map_err(|e| e.to_string())
 }
 
+
+
+
+
 #[tauri::command]
 pub fn pty_resize(
     state: tauri::State<PtyState>,
@@ -382,13 +386,16 @@ pub fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let sessions = state.sessions.read().unwrap();
-    let session = sessions.get(&id).ok_or_else(|| {
-        log::warn!("pty_resize android: unknown id={id}");
-        "no session".to_string()
-    })?;
+    let (master_fd, child_pid) = {
+        let sessions = state.sessions.read().unwrap();
+        let session = sessions.get(&id).ok_or_else(|| {
+            log::warn!("pty_resize android: unknown id={id}");
+            "no session".to_string()
+        })?;
+        let s = session.lock().unwrap();
+        (s.master_fd, s.child_pid)
+    }; // sessions lock dropped here
 
-    let master_fd = session.lock().unwrap().master_fd;
     let ws = libc::winsize {
         ws_col: cols,
         ws_row: rows,
@@ -396,7 +403,6 @@ pub fn pty_resize(
         ws_ypixel: 0,
     };
 
-    // TIOCSWINSZ: tell the kernel the new window size
     let ret = unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
     if ret != 0 {
         return Err(format!(
@@ -405,12 +411,10 @@ pub fn pty_resize(
         ));
     }
 
-    // Send SIGWINCH to proot so the shell knows to re-query the size
-    let pid = session.lock().unwrap().child_pid;
-    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGWINCH);
-
+    let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGWINCH);
     Ok(())
 }
+
 
 #[tauri::command]
 pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
