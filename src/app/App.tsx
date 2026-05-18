@@ -3,6 +3,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { IS_ANDROID } from "@/lib/platform";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AlertDialog,
