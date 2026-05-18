@@ -138,26 +138,19 @@ jobs:
         #    || (echo "::error::proot binary is not aarch64 ELF"; exit 1)
         #  cp proot "$GITHUB_WORKSPACE/src-tauri/assets/android/proot-aarch64"
 
+
       - name: Download proot for aarch64-linux-android
         run: |
-          # Download pre-built proot from Termux package repo (Android aarch64)
-          curl -fL -o /tmp/proot.deb \
-            "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.4.0_aarch64.deb"
-
-          # Extract the binary from the .deb
-          cd /tmp
-          ar x proot.deb
-          tar xf data.tar.xz ./data/data/com.termux/files/usr/bin/proot
-
-          # Copy into the repo assets
-          cp data/data/com.termux/files/usr/bin/proot \
-            "$GITHUB_WORKSPACE/src-tauri/assets/android/proot-aarch64"
-
-          # Verify it's the right ELF type
+          curl -fL -o "$GITHUB_WORKSPACE/src-tauri/assets/android/proot-aarch64" \
+            "https://skirsten.github.io/proot-portable-android-binaries/aarch64/proot"
+          
+          chmod +x "$GITHUB_WORKSPACE/src-tauri/assets/android/proot-aarch64"
+          
           file "$GITHUB_WORKSPACE/src-tauri/assets/android/proot-aarch64" \
-            | tee /dev/stderr \
             | grep -q "ARM aarch64" \
             || (echo "::error::proot binary is not aarch64 ELF"; exit 1)
+          
+          echo "proot binary OK"
 
       # ── Initialize the Android project + copy our Kotlin plugins in ───────
       - name: Initialize Android project
