@@ -5,7 +5,7 @@
 #[cfg(target_os = "android")]
 pub mod android;
 #[cfg(target_os = "android")]
-pub use android::{pty_close, pty_open, pty_resize, pty_write, PtyState};
+pub use android::PtyState;
 
 // ── Desktop PTY (portable-pty) ────────────────────────────────────────────────
 #[cfg(not(target_os = "android"))]
