@@ -1,10 +1,17 @@
+// Bootstrap is Android-only: it extracts the proot binary + Alpine rootfs from
+// app resources on first run. It also pulls in `std::os::unix::fs::PermissionsExt`,
+// which would fail to compile on Windows.
+#[cfg(target_os = "android")]
 mod bootstrap;
 mod modules;
 
-use modules::{fs, net, pty, secrets, shell, workspace};
+use modules::{fs, git, net, pty, secrets, shell, workspace};
+
+#[cfg(not(target_os = "android"))]
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-// ── Settings window (desktop only — Android has no multi-window) ─────────────
+// ── Settings window (desktop only) ───────────────────────────────────────────
+
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
@@ -53,9 +60,11 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     Ok(())
 }
 
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_os::init())
@@ -67,30 +76,30 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(pty::PtyState::default())
         .manage(shell::ShellState::default())
-        .manage(secrets::SecretsState::default());
-
-    // ── Desktop-only plugins ──────────────────────────────────────────────────
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        builder = builder
-            .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(
-                tauri_plugin_window_state::Builder::new()
-                    .with_state_flags(
-                        tauri_plugin_window_state::StateFlags::all()
-                            & !tauri_plugin_window_state::StateFlags::VISIBLE,
-                    )
-                    .build(),
-            )
-            .plugin(tauri_plugin_autostart::Builder::new().build());
-    }
-
-    builder
+        .manage(secrets::SecretsState::default())
+        .manage({
+            let registry = workspace::WorkspaceRegistry::default();
+            workspace::bootstrap_registry(&registry);
+            registry
+        })
         .invoke_handler(tauri::generate_handler![
-            // ── PTY ────────────────────────────────────────────────────────────
+            // ── PTY — Android ─────────────────────────────────────────────────
+            #[cfg(target_os = "android")]
+            pty::android::pty_open,
+            #[cfg(target_os = "android")]
+            pty::android::pty_write,
+            #[cfg(target_os = "android")]
+            pty::android::pty_resize,
+            #[cfg(target_os = "android")]
+            pty::android::pty_close,
+            // ── PTY — Desktop ─────────────────────────────────────────────────
+            #[cfg(not(target_os = "android"))]
             pty::pty_open,
+            #[cfg(not(target_os = "android"))]
             pty::pty_write,
+            #[cfg(not(target_os = "android"))]
             pty::pty_resize,
+            #[cfg(not(target_os = "android"))]
             pty::pty_close,
             // ── Filesystem ────────────────────────────────────────────────────
             fs::tree::list_subdirs,
@@ -107,6 +116,24 @@ pub fn run() {
             fs::search::fs_list_files,
             fs::grep::fs_grep,
             fs::grep::fs_glob,
+            // ── Git ───────────────────────────────────────────────────────────
+            git::commands::git_resolve_repo,
+            git::commands::git_panel_snapshot,
+            git::commands::git_status,
+            git::commands::git_diff,
+            git::commands::git_diff_content,
+            git::commands::git_stage,
+            git::commands::git_unstage,
+            git::commands::git_discard,
+            git::commands::git_commit,
+            git::commands::git_fetch,
+            git::commands::git_pull_ff_only,
+            git::commands::git_push,
+            git::commands::git_log,
+            git::commands::git_show_commit,
+            git::commands::git_commit_files,
+            git::commands::git_commit_file_diff,
+            git::commands::git_remote_url,
             // ── Shell ─────────────────────────────────────────────────────────
             shell::shell_run_command,
             shell::shell_session_open,
@@ -116,10 +143,12 @@ pub fn run() {
             shell::shell_bg_logs,
             shell::shell_bg_kill,
             shell::shell_bg_list,
-            // ── WSL (compiles cross-platform; returns empty on non-Windows) ───
+            // ── Workspace / WSL ───────────────────────────────────────────────
             workspace::wsl_list_distros,
             workspace::wsl_default_distro,
             workspace::wsl_home,
+            workspace::workspace_authorize,
+            workspace::workspace_current_dir,
             // ── Secrets ───────────────────────────────────────────────────────
             secrets::secrets_get,
             secrets::secrets_set,

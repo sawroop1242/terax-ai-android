@@ -1,21 +1,25 @@
 // src-tauri/src/modules/pty/android.rs
 //
-// Android PTY backend: opens /dev/ptmx via nix::pty::openpty,
+// Android PTY backend: opens /dev/ptmx via POSIX posix_openpt(),
 // spawns proot + Alpine Linux rootfs, streams output to xterm.js
 // through a Tauri Channel<Response>.
+//
+// NOTE: openpty() is NOT used here because Android's Bionic libc does
+// not ship libutil. Instead we use the standard POSIX sequence:
+//   posix_openpt → grantpt → unlockpt → ptsname → open(slave)
 
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::io::{Read, Write};
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{FromRawFd, RawFd};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nix::pty::{openpty, Winsize};
 use tauri::ipc::{Channel, Response};
-use tauri::Manager;
+// use tauri::Manager;
 
 // How often the flusher thread drains the pending buffer and sends to JS
 const FLUSH_INTERVAL: Duration = Duration::from_millis(4);
@@ -40,6 +44,74 @@ pub fn rootfs_dir() -> PathBuf {
     android_files_dir().join("rootfs")
 }
 
+// ── PTY helpers ───────────────────────────────────────────────────────────────
+
+/// Open a PTY master/slave pair using the standard POSIX API that
+/// Android's Bionic libc actually provides (no openpty / libutil needed).
+fn open_pty_pair(cols: u16, rows: u16) -> Result<(RawFd, RawFd), String> {
+    // 1. Open the master side
+    let master_fd: RawFd =
+        unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+    if master_fd < 0 {
+        return Err(format!(
+            "posix_openpt failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    // 2. Grant access to the slave device
+    if unsafe { libc::grantpt(master_fd) } < 0 {
+        unsafe { libc::close(master_fd) };
+        return Err(format!(
+            "grantpt failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    // 3. Unlock the slave device
+    if unsafe { libc::unlockpt(master_fd) } < 0 {
+        unsafe { libc::close(master_fd) };
+        return Err(format!(
+            "unlockpt failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    // 4. Get slave device name (e.g. /dev/pts/3)
+    let slave_name = unsafe {
+        let ptr = libc::ptsname(master_fd);
+        if ptr.is_null() {
+            libc::close(master_fd);
+            return Err("ptsname returned null".to_string());
+        }
+        std::ffi::CStr::from_ptr(ptr).to_string_lossy().to_string()
+    };
+
+    // 5. Open the slave side
+    let slave_cstr =
+        CString::new(slave_name).map_err(|e| format!("ptsname CString: {e}"))?;
+    let slave_fd: RawFd =
+        unsafe { libc::open(slave_cstr.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+    if slave_fd < 0 {
+        unsafe { libc::close(master_fd) };
+        return Err(format!(
+            "open slave pty failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    // 6. Set initial window size on the master
+    let ws = libc::winsize {
+        ws_col: cols,
+        ws_row: rows,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
+
+    Ok((master_fd, slave_fd))
+}
+
 // ── Session ───────────────────────────────────────────────────────────────────
 
 struct Session {
@@ -52,7 +124,10 @@ struct Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Best-effort kill. The process may already be dead.
-        let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL);
+        let _ = nix::sys::signal::kill(
+            self.child_pid,
+            nix::sys::signal::Signal::SIGKILL,
+        );
         unsafe { libc::close(self.master_fd) };
     }
 }
@@ -92,24 +167,16 @@ pub fn pty_open(
     let rootfs = rootfs_dir();
 
     if !proot.exists() {
-        return Err("Bootstrap not complete. Call bootstrap_android from the frontend first.".into());
+        return Err(
+            "Bootstrap not complete. Call bootstrap_android from the frontend first.".into(),
+        );
     }
     if !rootfs.exists() {
         return Err("Rootfs not found. Bootstrap may have failed.".into());
     }
 
     // ── Open PTY pair ────────────────────────────────────────────────────────
-    let ws = Winsize {
-        ws_col: cols,
-        ws_row: rows,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    let pty_result = openpty(Some(&ws), None).map_err(|e| format!("openpty failed: {e}"))?;
-
-    // nix 0.27: openpty returns OwnedFd. Convert to RawFd for manual control.
-    let master_fd: RawFd = pty_result.master.into_raw_fd();
-    let slave_fd: RawFd = pty_result.slave.into_raw_fd();
+    let (master_fd, slave_fd) = open_pty_pair(cols, rows)?;
 
     // Working directory inside the rootfs
     let inner_cwd = cwd
@@ -130,16 +197,11 @@ pub fn pty_open(
                 "-0",
                 "-r",
                 rootfs.to_str().unwrap(),
-                "-b",
-                "/dev",
-                "-b",
-                "/proc",
-                "-b",
-                "/sys",
-                "-b",
-                "/data:/data",
-                "-w",
-                &inner_cwd,
+                "-b", "/dev",
+                "-b", "/proc",
+                "-b", "/sys",
+                "-b", "/data:/data",
+                "-w", &inner_cwd,
                 // Alpine's default shell
                 "/bin/sh",
                 "-l",
@@ -169,8 +231,7 @@ pub fn pty_open(
     // ── Write channel: mpsc → master_fd ─────────────────────────────────────
     let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
     {
-        // Clone master_fd for the write thread. We dup it so the read and
-        // write threads each own their own fd copy.
+        // dup master_fd so the write thread owns its own fd copy.
         let write_master = unsafe { libc::dup(master_fd) };
         thread::Builder::new()
             .name("terax-pty-writer-android".into())
@@ -188,7 +249,7 @@ pub fn pty_open(
 
     // ── Pending buffer shared between reader and flusher ────────────────────
     let pending: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::with_capacity(READ_BUF)));
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
 
     // ── Read thread: master_fd → pending buffer ──────────────────────────────
     {
@@ -303,18 +364,20 @@ pub fn pty_write(
     id: u32,
     data: String,
 ) -> Result<(), String> {
-    let sessions = state.sessions.read().unwrap();
-    let session = sessions.get(&id).ok_or_else(|| {
-        log::warn!("pty_write android: unknown id={id}");
-        "no session".to_string()
-    })?;
-    session
-        .lock()
-        .unwrap()
-        .write_tx
-        .send(data.into_bytes())
-        .map_err(|e| e.to_string())
+    let tx = {
+        let sessions = state.sessions.read().unwrap();
+        let session = sessions.get(&id).ok_or_else(|| {
+            log::warn!("pty_write android: unknown id={id}");
+            "no session".to_string()
+        })?;
+        let x = session.lock().unwrap().write_tx.clone(); x
+    }; // sessions lock dropped here
+    tx.send(data.into_bytes()).map_err(|e| e.to_string())
 }
+
+
+
+
 
 #[tauri::command]
 pub fn pty_resize(
@@ -323,21 +386,23 @@ pub fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let sessions = state.sessions.read().unwrap();
-    let session = sessions.get(&id).ok_or_else(|| {
-        log::warn!("pty_resize android: unknown id={id}");
-        "no session".to_string()
-    })?;
+    let (master_fd, child_pid) = {
+        let sessions = state.sessions.read().unwrap();
+        let session = sessions.get(&id).ok_or_else(|| {
+            log::warn!("pty_resize android: unknown id={id}");
+            "no session".to_string()
+        })?;
+        let s = session.lock().unwrap();
+        (s.master_fd, s.child_pid)
+    }; // sessions lock dropped here
 
-    let master_fd = session.lock().unwrap().master_fd;
-    let ws = Winsize {
+    let ws = libc::winsize {
         ws_col: cols,
         ws_row: rows,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
 
-    // TIOCSWINSZ: tell the kernel the new window size
     let ret = unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
     if ret != 0 {
         return Err(format!(
@@ -346,12 +411,10 @@ pub fn pty_resize(
         ));
     }
 
-    // Also send SIGWINCH to proot so the shell knows to re-query the size
-    let pid = session.lock().unwrap().child_pid;
-    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGWINCH);
-
+    let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGWINCH);
     Ok(())
 }
+
 
 #[tauri::command]
 pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
@@ -363,5 +426,4 @@ pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
         log::debug!("pty_close android: unknown id={id}");
     }
     Ok(())
-}
-
+    }
