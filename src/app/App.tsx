@@ -285,7 +285,18 @@ export default function App() {
   const [pendingDeleteTabs, setPendingDeleteTabs] = useState<number[] | null>(
     null,
   );
+  
+
   useEffect(() => {
+    // On Android homeDir() is unavailable — use the app's private files
+    // directory where proot + Alpine are extracted by bootstrap.
+    const ANDROID_HOME = "/data/data/app.crynta.terax/files/rootfs/root";
+
+    if (IS_ANDROID) {
+      setHome(ANDROID_HOME);
+      return;
+    }
+
     homeDir()
       .then(async (p) => {
         const normalized = p.replace(/\\/g, "/");
