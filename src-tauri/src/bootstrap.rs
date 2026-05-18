@@ -4,7 +4,6 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-
 use tauri::{AppHandle, Manager};
 
 fn files_dir(app: &AppHandle) -> PathBuf {
@@ -16,7 +15,6 @@ fn files_dir(app: &AppHandle) -> PathBuf {
 #[tauri::command]
 pub fn bootstrap_status(app: AppHandle) -> bool {
     let base = files_dir(&app);
-    // यह सुनिश्चित करें कि प्रूट बाइनरी और अल्पाइन का मुख्य शेल दोनों मौजूद हैं
     base.join("proot").exists() && base.join("rootfs/bin/sh").exists()
 }
 
@@ -34,63 +32,44 @@ pub async fn bootstrap_android(app: AppHandle) -> Result<String, String> {
     log::info!("bootstrap_android: starting first-run bootstrap");
     fs::create_dir_all(&base).map_err(|e| format!("create files dir: {e}"))?;
 
-    // ── 1. Extract proot binary using memory bytes ───────────────────────────
+    // ── 1. Copy proot binary from asset_resolver ───────────────────────────
     if !proot_dest.exists() {
-        log::info!("bootstrap_android: Extracting proot binary bytes...");
-        // resolve_resource का उपयोग APK के अंदर से सीधे बाइट्स पढ़ने के लिए करें
-    
+        // Tauri v2 कोर एसेट रिसॉल्वर का उपयोग करके APK से सीधे बाइट्स पढ़ें
+        let asset_resolver = app.asset_resolver();
+        let proot_asset = asset_resolver
+            .get("assets/android/proot-aarch64".to_string())
+            .ok_or_else(|| "proot-aarch64 not found in app assets".to_string())?;
 
-                // Tauri v2 में .path().resource() का उपयोग करके वास्तविक पाथ निकालें
-        let proot_resource_path = app
-            .path()
-            .resource("assets/android/proot-aarch64")
-            .map_err(|e| format!("resolve proot asset path failed: {e}"))?;
-
-        // पाथ मिलने के बाद std::fs::read का उपयोग करके फ़ाइल के बाइट्स पढ़ें
-        let proot_bytes = std::fs::read(&proot_resource_path)
-            .map_err(|e| format!("failed to read proot asset bytes from disk: {e}"))?;
-
-        fs::write(&proot_dest, proot_bytes)
+        // प्रूट बाइनरी को इंटरनल डिस्क पर लिखें
+        fs::write(&proot_dest, &proot_asset.bytes)
             .map_err(|e| format!("write proot binary: {e}"))?;
-        
 
-        
-
-        // Executable परमिशन (0o755) सेट करें ताकि Permission Denied (Error 13) न आए
+        // Executable परमिशन (0o755) सेट करें (OS Error 13 से बचने के लिए)
         fs::set_permissions(&proot_dest, fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("chmod proot: {e}"))?;
 
-        log::info!("bootstrap_android: proot binary installed at {}", proot_dest.display());
+        log::info!("bootstrap_android: proot binary installed");
     }
 
-    // ── 2. Extract Alpine rootfs tarball using intermediate tmp file ─────────
+    // ── 2. Extract Alpine rootfs tarball via temporary file ──────────────────
     let alpine_check = rootfs_dest.join("bin/sh");
     if !alpine_check.exists() {
-        log::info!("bootstrap_android: Extracting alpine tarball bytes...");
         fs::create_dir_all(&rootfs_dest).map_err(|e| format!("create rootfs dir: {e}"))?;
 
-        
+        let asset_resolver = app.asset_resolver();
+        let tarball_asset = asset_resolver
+            .get("assets/android/alpine-rootfs.tar.gz".to_string())
+            .ok_or_else(|| "alpine-rootfs.tar.gz not found in app assets".to_string())?;
 
-                // ठीक इसी तरह Alpine tarball का भी पाथ निकालें
-        let tarball_resource_path = app
-            .path()
-            .resource("assets/android/alpine-rootfs.tar.gz")
-            .map_err(|e| format!("resolve rootfs asset path failed: {e}"))?;
-
-        // std::fs::read का उपयोग करके .tar.gz के बाइट्स लोड करें
-        let tarball_bytes = std::fs::read(&tarball_resource_path)
-            .map_err(|e| format!("failed to read rootfs asset bytes from disk: {e}"))?;
-
-        // इसके बाद का आपका बाकी कोड (tmp_tarball_path में राइट करना और tar चलाना) वैसा ही रहेगा
+        // सिस्टम 'tar' को रीडेबल पाथ देने के लिए इसे टेम्परेरी फाइल में सहेजें
         let tmp_tarball_path = base.join("alpine-tmp.tar.gz");
-        fs::write(&tmp_tarball_path, tarball_bytes)
+        fs::write(&tmp_tarball_path, &tarball_asset.bytes)
             .map_err(|e| format!("write intermediate tarball: {e}"))?;
-        
 
-        log::info!("bootstrap_android: Running system tar extraction...");
+        // Android के सिस्टम 'tar' टूल का उपयोग करके अनपैक करें
         let status = std::process::Command::new("tar")
             .args([
-                "-xzf",
+                "xzf",
                 tmp_tarball_path.to_str().unwrap(),
                 "-C",
                 rootfs_dest.to_str().unwrap(),
@@ -98,39 +77,27 @@ pub async fn bootstrap_android(app: AppHandle) -> Result<String, String> {
             .status()
             .map_err(|e| format!("spawn tar: {e}"))?;
 
-        // काम पूरा होने के बाद अस्थायी फ़ाइल को तुरंत हटा दें
+        // काम होने के बाद अस्थायी फ़ाइल को तुरंत हटा दें
         let _ = fs::remove_file(tmp_tarball_path);
 
         if !status.success() {
-            return Err(format!(
-                "tar extraction failed with exit code: {:?}",
-                status.code()
-            ));
+            return Err(format!("tar extraction failed: {:?}", status.code()));
         }
-
-        log::info!("bootstrap_android: rootfs extracted to {}", rootfs_dest.display());
+        log::info!("bootstrap_android: rootfs extracted");
     }
 
-    // ── 3. Write /etc/resolv.conf for DNS inside proot ────────────────────────
+    // ── 3. Write /etc/resolv.conf ──────────────────────────────────────────
     let resolv_path = rootfs_dest.join("etc/resolv.conf");
-    if let Some(parent) = resolv_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let mut resolv = fs::File::create(&resolv_path)
-        .map_err(|e| format!("create resolv.conf: {e}"))?;
+    if let Some(parent) = resolv_path.parent() { let _ = fs::create_dir_all(parent); }
+    let mut resolv = fs::File::create(&resolv_path).map_err(|e| format!("create resolv.conf: {e}"))?;
     writeln!(resolv, "nameserver 8.8.8.8").map_err(|e| e.to_string())?;
     writeln!(resolv, "nameserver 1.1.1.1").map_err(|e| e.to_string())?;
 
-    // ── 4. Write /etc/profile.d/terax.sh to set useful env vars ─────────────
+    // ── 4. Write /etc/profile.d/terax.sh ───────────────────────────────────
     let profile_d = rootfs_dest.join("etc/profile.d");
     let _ = fs::create_dir_all(&profile_d);
-    let terax_profile = profile_d.join("terax.sh");
-    let mut pf = fs::File::create(&terax_profile)
-        .map_err(|e| format!("create terax profile: {e}"))?;
-    writeln!(pf, "export TERM=xterm-256color").map_err(|e| e.to_string())?;
-    writeln!(pf, "export COLORTERM=truecolor").map_err(|e| e.to_string())?;
-    writeln!(pf, "export TERAX_TERMINAL=1").map_err(|e| e.to_string())?;
-    writeln!(pf, "export LANG=C.UTF-8").map_err(|e| e.to_string())?;
+    let mut pf = fs::File::create(profile_d.join("terax.sh")).map_err(|e| format!("create profile: {e}"))?;
+    writeln!(pf, "export TERM=xterm-256color\nexport COLORTERM=truecolor\nexport TERAX_TERMINAL=1\nexport LANG=C.UTF-8").map_err(|e| e.to_string())?;
 
     log::info!("bootstrap_android: complete");
     Ok("bootstrapped".into())
