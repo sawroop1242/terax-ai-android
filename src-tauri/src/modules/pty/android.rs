@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::ipc::{Channel, Response};
-use tauri::Manager;
+// use tauri::Manager;
 
 // How often the flusher thread drains the pending buffer and sends to JS
 const FLUSH_INTERVAL: Duration = Duration::from_millis(4);
@@ -81,7 +81,7 @@ fn open_pty_pair(cols: u16, rows: u16) -> Result<(RawFd, RawFd), String> {
     let slave_name = unsafe {
         let ptr = libc::ptsname(master_fd);
         if ptr.is_null() {
-            unsafe { libc::close(master_fd) };
+            libc::close(master_fd);
             return Err("ptsname returned null".to_string());
         }
         std::ffi::CStr::from_ptr(ptr).to_string_lossy().to_string()
