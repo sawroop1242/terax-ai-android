@@ -461,7 +461,7 @@ export default function App() {
   const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
     activeTab,
     tabs,
-    launchCwd ?? home,
+    IS_ANDROID ? home : (launchCwd ?? home),
   );
 
   useEffect(() => {
@@ -776,7 +776,7 @@ export default function App() {
     return null;
   })();
   const workspaceFallbackPath = launchCwdResolved
-    ? (launchCwd ?? home ?? null)
+    ? (IS_ANDROID ? home : (launchCwd ?? home)) ?? null
     : null;
   const sourceControlContextPath = (() => {
     if (activeTab?.kind === "terminal") {
@@ -1035,7 +1035,7 @@ export default function App() {
         term.focus();
         return true;
       },
-      getWorkspaceRoot: () => explorerRoot ?? launchCwd ?? home ?? null,
+      getWorkspaceRoot: () => explorerRoot ?? (IS_ANDROID ? home : launchCwd) ?? home ?? null,
       getActiveFile: () => {
         const t = tabs.find((x) => x.id === activeId);
         return t?.kind === "editor" ? t.path : null;
