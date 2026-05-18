@@ -43,7 +43,7 @@ portable-pty = "0.9"
 
 # ── Android-only: PTY via nix + proot ─────────────────────────────────────────
 [target.'cfg(target_os = "android")'.dependencies]
-nix = { version = "0.27", features = ["pty", "process", "fs", "signal", "term"] }
+nix = { version = "0.29", features = ["pty", "process", "fs", "signal", "term"] }
 
 # ── Unix shared (desktop + android) ───────────────────────────────────────────
 [target.'cfg(unix)'.dependencies]
