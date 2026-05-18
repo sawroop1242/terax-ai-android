@@ -156,6 +156,19 @@ jobs:
       - name: Initialize Android project
         run: bash ./scripts/init-android.sh
 
+      - name: Force Target SDK 28 & Enable Native Libs
+        run: |
+          echo "Modifying targetSdk to 28 in build.gradle.kts..."
+          # build.gradle.kts में targetSdk = 34 (या कोई अन्य नंबर) को बदलकर 28 करना
+          sed -i 's/targetSdk = [0-9]*/targetSdk = 28/g' src-tauri/gen/android/app/build.gradle.kts
+          
+          echo "Modifying AndroidManifest.xml to extract native libraries..."
+          # Android Q+ प्रतिबंधों से बचने के लिए extractNativeLibs="true" जोड़ना
+          sed -i 's/<application/<application android:extractNativeLibs="true"/g' src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          
+          echo "Verification:"
+          cat src-tauri/gen/android/app/build.gradle.kts | grep targetSdk
+
       - name: Build APK (debug)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.profile == 'debug' }}
         run: pnpm tauri android build --apk --debug
